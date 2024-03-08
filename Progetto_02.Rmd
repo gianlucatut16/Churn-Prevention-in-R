@@ -1,0 +1,1787 @@
+---
+title: "FATER Challenge"
+author: "Guglielmo Venezia, Alessandro Riolo, Gianluca Tutino, Armando Ciardiello"
+date: "2023-03-07"
+output: html_document
+---
+
+
+
+
+```{r setup, include=FALSE}
+############ LIBRARIES #############
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(visdat)
+library(tidyr)
+library(naniar)
+library(corrplot)
+library(reshape2)
+library(psych)
+library(randomForest)
+library(caret)
+library(devtools)
+library(factoextra)
+library(FactoMineR)
+library(ggpubr)
+library(ggrepel)
+library(mlbench)
+library(caret)
+library(ranger)
+library(tidymodels)
+library(yardstick)
+library(glmnet)
+library(forcats)
+library(pROC)
+library(yardstick)
+
+doParallel::registerDoParallel(cores = 7)
+
+setwd("C:/Users/gltut/Desktop/Corsi/Statistical Data Analisys/FATER")
+```
+
+
+```{r, include = FALSE}
+
+# Function needed by missing_values
+toBinaryMatrix <- function(df){
+  m<-c()
+  for(i in colnames(df)){
+    x<-sum(is.na(df[,i]))
+    # missing value count
+    m<-append(m,x)
+    # non-missing value count
+    m<-append(m,nrow(df)-x) 
+  }
+  
+  # adding column and row names to matrix
+  a<-matrix(m,nrow=2)
+  rownames(a)<-c("TRUE","FALSE")
+  colnames(a)<-colnames(df)
+  
+  return(a)
+}
+
+# Confusin matrix for supervised models
+draw_confusion_matrix <- function(cm) {
+  
+  layout(matrix(c(1,1,2)))
+  par(mar=c(2,2,2,2))
+  plot(c(100, 345), c(300, 450), type = "n", xlab="", ylab="", xaxt='n', yaxt='n')
+  title('CONFUSION MATRIX', cex.main=2)
+  
+  # create the matrix 
+  rect(150, 430, 240, 370, col='#3F97D0')
+  text(195, 435, 'CHURN', cex=1.2)
+  rect(250, 430, 340, 370, col='#F7AD50')
+  text(295, 435, 'NOCHURN', cex=1.2)
+  text(125, 370, 'Predicted', cex=1.3, srt=90, font=2)
+  text(245, 450, 'Actual', cex=1.3, font=2)
+  rect(150, 305, 240, 365, col='#F7AD50')
+  rect(250, 305, 340, 365, col='#3F97D0')
+  text(140, 400, 'CHURN', cex=1.2, srt=90)
+  text(140, 335, 'NOCHURN', cex=1.2, srt=90)
+  
+  # add in the cm results 
+  res <- as.numeric(cm$table)
+  text(195, 400, res[1], cex=1.6, font=2, col='white')
+  text(195, 335, res[2], cex=1.6, font=2, col='white')
+  text(295, 400, res[3], cex=1.6, font=2, col='white')
+  text(295, 335, res[4], cex=1.6, font=2, col='white')
+  
+  # add in the specifics 
+  plot(c(100, 0), c(100, 0), type = "n", xlab="", ylab="", main = "DETAILS", xaxt='n', yaxt='n')
+  text(10, 85, names(cm$byClass[1]), cex=1.2, font=2)
+  text(10, 70, round(as.numeric(cm$byClass[1]), 3), cex=1.2)
+  text(30, 85, names(cm$byClass[2]), cex=1.2, font=2)
+  text(30, 70, round(as.numeric(cm$byClass[2]), 3), cex=1.2)
+  text(50, 85, names(cm$byClass[5]), cex=1.2, font=2)
+  text(50, 70, round(as.numeric(cm$byClass[5]), 3), cex=1.2)
+  text(70, 85, names(cm$byClass[6]), cex=1.2, font=2)
+  text(70, 70, round(as.numeric(cm$byClass[6]), 3), cex=1.2)
+  text(90, 85, names(cm$byClass[7]), cex=1.2, font=2)
+  text(90, 70, round(as.numeric(cm$byClass[7]), 3), cex=1.2)
+  
+  # add in the accuracy information 
+  text(30, 35, names(cm$overall[1]), cex=1.5, font=2)
+  text(30, 20, round(as.numeric(cm$overall[1]), 3), cex=1.4)
+  text(70, 35, names(cm$overall[2]), cex=1.5, font=2)
+  text(70, 20, round(as.numeric(cm$overall[2]), 3), cex=1.4)
+}  
+
+# Plotting the glmnet regression
+
+
+plotting_model_cv <- function(model, ALPHA){
+  betas = as.matrix(model$beta)
+  lambdas = model$lambda
+  names(lambdas) = colnames(betas)
+  as.data.frame(betas) %>% 
+    tibble::rownames_to_column("variable") %>% 
+    pivot_longer(-variable) %>% 
+    mutate(lambda=lambdas[name]) %>% 
+    ggplot(aes(x=lambda,y=value,col=variable)) + 
+    geom_line() + 
+    geom_label_repel(data=~subset(.x,lambda==min(lambda)),
+                     aes(label=variable),nudge_x=-0.5) +
+    scale_x_log10() +
+    labs(title = paste('Alpha = ', ALPHA), x = 'Lambda', y = 'Value') +
+    theme(plot.title = element_text(hjust = 0.5))
+}
+```
+Our project focus on the FATER Challenge: we were given informations about the activities of different users of an application developed by FATER. In this app an user can upload child's products he/she bought in order to get points. The user can do some missions given by the app to get more points. Finally he/she can use these points to get rewards. The question asked by FATER is: why the users leave the app even if they could use it (so they have childs' that need FATER products)?.  
+
+We were provided six datasets:  
+
+- anagrafica: the info on the different users of the app  
+
+- accessi_app: the access history of every player  
+
+- prodotti_caricati: the history of uploaded products by every player  
+
+- missioni_player : the history of the missions made by every player  
+
+- premi_mamme: the different rewards requested by every player  
+
+- conversione_ean_prodotto: the info of every product a player can upload  
+ 
+As first step we imported the different datasets, skipping some variables that we won't use in the following analysis. For every datasets we make an analysis for his missing values and in some cases a first statistical visualization.
+
+### Anagrafica
+
+After importing the dataset we want to visualize the *NA* values. We use a function that shows for every attribute how many missing values there are respect to the number of rows. Before that we skipped the columns *Provincia*, *Comune*, *SiglaProvincia* because they are info too specific summed up in the *Regione* column.
+
+```{r, fig.align = 'center'}
+######### DATASETS #########
+anagrafica <- read_csv("anagrafica.csv", show_col_types = FALSE,
+                       col_types = cols(Provincia = col_skip(), 
+                       SiglaProvincia = col_skip(), Comune = col_skip()))
+
+
+print(colSums(is.na(anagrafica)))
+
+binMat = toBinaryMatrix(anagrafica)
+barplot(binMat,
+          main = "Missing values in all features",xlab = "Frequency",
+          col = c("black","white"))
+
+```
+Considering the master dataset, there are NA values in the variables *DtaPresuntoParto* (2866), *ETA_MM_BambinoTODAY* (2866), *ETA_MM_BambinoREG* (2868) and *Regione* (294). Then we used a function to show the percentage of missing values:
+
+```{r, fig.align = 'center'}
+gg_miss_var(anagrafica, show_pct = TRUE)
+```
+The graph shows that in the variables DtaPresuntoParto, *ETA_MM_BambinoTODAY* and *ETA_MM_BambinoREG* the percentage of NA values is just over 6%, for *Regione* it is around 0.6%. Finally we made this plot to show the rows in which there are more than one missing values
+```{r, fig.align = 'center'}
+gg_miss_upset(anagrafica)
+```
+In the graph above, we observe when the co-presence of *NA* values for different variables occurs for the same observations. *DtaPresuntoPartoarto*, *ETA_MM_BambinoTODAY* and *ETA_MM_BambinoREG* present 2833 Na values simultaneously. *Regione* and *ETA_MM_BambinoREG* present 261 and 2 *NA* values individually, respectively, while all 4 variables present 33 Na values simultaneously. So we can see that almost all the missing values are caused by users that didn't give the child's birth-date and so the app can't calculate the child's age at the end of the survey and at the users' registration.  
+With a barplot we show the counting of players for every region:
+
+```{r, fig.align = 'center'}
+ggplot(anagrafica, aes(x=reorder(Regione,Regione, function(x)-length(x)))) + 
+  geom_bar(color = 'black', fill = 'white') + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))+
+  labs(title =  'Count of players for each region', x = 'Regione', y  = 'Count')
+```
+As can be guessed, more populous regions have more players.  
+We add an histogram to see the distribution of the childs' age  at the end of the survey.
+```{r, fig.align = 'center'}
+ggplot(subset(anagrafica, !(is.na(ETA_MM_BambinoTODAY))), aes(x = ETA_MM_BambinoTODAY))+
+  geom_histogram(color = 'black', fill = 'white', binwidth = 1) + 
+  labs (title = "Histogram childs' age", x = 'Months', y = 'Count')
+```
+The data collection concerning the presumed age of the child shows a range of values from a minimum value of -10 to a maximum value of 37. It is possible to have negative values because mothers participated in the survey already 10 months before the birth of their child. Finally we use a barplot to see the frequency of births in the different months through the years of the survey.
+
+```{r, fig.align = 'center'}
+################### Visualization anagrafica_2 ###################
+anagrafica_2 = anagrafica
+
+# Plotto il numero di parti per ogni anno ed ogni mese (2021 stesso andamento 2020 https://www.truenumbers.it/i-mesi-con-piu-nati/)
+num_parti = anagrafica_2 %>%
+  group_by(factor(month(DtaPresuntoParto)), factor(year(DtaPresuntoParto))) %>%
+  summarise(parti = n())
+
+#Tolgo i NA
+num_parti = drop_na(num_parti)
+colnames(num_parti)[1] = 'Month'
+colnames(num_parti)[2] = 'Year'
+
+num_parti = filter(num_parti, Year %in% c(2020, 2021, 2022))
+
+ggplot(num_parti, aes(x = Month, y = parti, fill = Year)) +
+  geom_bar(stat = "identity", position = 'dodge') +
+  labs(title = "Births' number each month", x = "Month", y = 'Count')
+table(year(anagrafica$DtaPresuntoParto))
+```
+In 2020 and 2021, births have a similar trend, but with a higher amount in 2021. In 2022, the trend seems to be reversed; this is probably because there is less data in this year.
+
+### Accessi_app
+
+Importing the dataset:
+```{r}
+######### DATASETS #########
+accessi_app <- read_csv("accessi_app.csv", show_col_types = FALSE)
+
+```
+
+So the first step was to understand the extent of the data collection. So we've taken the first and last access recorded for the players:
+```{r Inizio, fine e periodo raccolta dati}
+survey_start = as.Date(min(accessi_app$updated_at))
+survey_end = as.Date(max(accessi_app$updated_at))
+survey_period = survey_end - survey_start
+survey_period
+```
+Then we restrict all the datasets dates from survey start to survey end in order to get only the info of the 180 days in which we have all the data for every users.
+
+So the data were collected for about six months. At this point we want to construct one dataset with as much info as possible from all the datasets.
+But we can see that the variable *source* is not very useful:
+ 
+```{r}
+table(accessi_app$source)
+```
+In fact only a small part of the rows have *sito* as value. So the variable is not very meaningful and we'll skip it. Futhermore we can see that this dataset have not missing values:
+```{r}
+accessi_app = accessi_app[- 2]
+sum(is.na(accessi_app))
+```
+
+With a barplot we count the players' history of access for every month
+```{r, fig.align = 'center'}
+accessi_app$updated_atMONTH = as.factor(month(accessi_app$updated_at))
+ggplot(data=accessi_app, aes(x=updated_atMONTH)) +
+  geom_bar( width=0.5, color = 'black', fill = 'white') + 
+  labs(title = 'Access number for each month of the survey', x = 'Month', y = 'Count') + 
+  scale_x_discrete(labels = c('March', 'April', 'May', 'June', 'July', 'August', 'September'))
+```
+
+From the bar graph, we can see that more access was made in the summer months (*July*, *August*).
+
+### Prodotti_caricati
+Importing the dataset:
+```{r}
+prodotti_caricati <- read_csv('prodotti_caricati.csv', show_col_types = FALSE)
+prodotti_caricati = filter(prodotti_caricati, created_at >= survey_start & created_at <= survey_end)
+```
+
+We study the missing values:
+```{r, fig.align = 'center'}
+print(colSums(is.na(prodotti_caricati)))
+
+binMat = toBinaryMatrix(prodotti_caricati)
+barplot(binMat,
+          main = "Missing values in all features",xlab = "Frequency",
+          col = c("black","white"))
+
+```
+
+Then we used a function to show the percentage of missing values:
+
+```{r, fig.align = 'center'}
+gg_miss_var(prodotti_caricati, show_pct = TRUE)
+```
+We can see that there are present 449243 *NA* values for the variable *missionDetail* e 715 per *EAN.* This makes impossible the link with the dataset *missioni_players* because more than the 86% of the key is missing.    
+With an histogram we show the distribution of points given to each players for all of their uploaded products
+```{r, fig.align = 'center'}
+ggplot(prodotti_caricati, aes(x = points))+    
+  geom_histogram(color = 'black', fill = 'white', binwidth = 65)+
+  labs(title = 'Histogram of uploaded products points', x = 'Points', y = 'Frequency')
+```
+The distribution has a tail on the right side of the distribution (confirmed by the positive skewness 2.02), and is leptokurtic, i.e. sharper than a normal distribution, in fact it has a positive kurtosis value (4.26). The distribution concentrates on a rather low value, in fact it presents a mode of 200, i.e. missions in the majority of cases earn 200 points.
+
+### Missioni_players
+
+Importing the dataset:
+```{r}
+missioni_players <- read_csv("missioni_players.csv", show_col_types = FALSE, 
+                             col_types = cols(type = col_skip()))
+missioni_players = filter(missioni_players, created_at >= survey_start & created_at <= survey_end)
+```
+
+This dataset has no missing values.
+
+With an histogram we show the distribution of points given to each players for all of the missions they've done.
+```{r, fig.align = 'center'}
+ggplot(missioni_players, aes(x = points)) +   
+       geom_histogram(color = 'black', fill = 'white')+
+       labs(title = 'Histogram of mission points', x = 'Points', y = 'Frequency', binwidth = 65)      
+```
+The distribution has a tail on the right side of the distribution (confirmed by the positive skewness 3.30), and is leptokurtic, i.e. sharper than a normal distribution, in fact it has a high kurtosis value (14.66). The distribution focuses on a rather low value, in fact it presents a mode of 400, i.e. missions in the majority of cases earn 400 points.  
+The different missions are splitted in three different kinds denoted by the column *subType*. We can see the frequency of missions for every type with a barplot.
+
+```{r, fig.align = 'center'}
+table(missioni_players$subType)
+
+pcts <- missioni_players %>%
+  group_by(subType) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(percentage=`n`/sum(`n`) * 100)
+
+ggplot(pcts, aes(x=1, y=percentage, fill=subType)) +
+  geom_bar(stat="identity") +
+  geom_text(aes(label = paste0(round(percentage,1),"%")),position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y") +
+  theme_void() 
+
+
+```
+For more info we use a boxplot to see the distribution of points given by the different kind of mission:
+```{r Boxplot punti missioni vs tipo, fig.align = 'center'}
+ggplot(missioni_players, aes(x = subType, y = points))+
+  geom_boxplot(color = 'black')+
+  stat_summary()+
+  stat_boxplot(geom ='errorbar', width = 0.5)+
+  labs(title = "Points for mission's type", x = 'Type', y = 'Count')
+```
+First we use a one way anova to quantify the change in mean of points given for each type of mission.  
+
+```{r Anova punti missioni vs tipo}
+
+missioni_players$subType = as.factor(missioni_players$subType)
+
+missioni_players1 = missioni_players
+
+
+aov_missioni = aov(points ~ subType, subset(missioni_players1, !(is.na(subType))))
+summary(aov_missioni)
+par(mfrow=c(2,2))
+plot(aov_missioni)
+par(mfrow=c(1,1))
+```
+The p-value is very small, so the H0 hypothesis of equality of averages is rejected. There is a significant difference between the mission types in terms of the points obtained. Then we plot the anova test with *TukeyHSD* to visualize the difference in mean between the types of mission.
+```{r TukeyHSD anova punti missioni vs tipo, fig.align = 'center'}
+plot(TukeyHSD(aov_missioni, "subType", ordered = T, main = 'One way'))
+```
+The graph of Tukey's test shows the average difference between the points obtained by the mission types (*cib*, *double*, *ticket-points*). The biggest difference is between *ticket-points* and *cib* (489.4194), followed by that between *double* and *cib* (321.6196) and that between *ticket-points* and *double* (167.7998). At this point we want to use a linear model to understand how much is the increase in points when we do a more profitable type of mission
+
+```{r Modello lineare punti vs tipo missioni}
+missioni_players1$subType = recode(missioni_players1$subType, 'cib' = 1, 'double' = 2, 'ticket-punti' = 3)
+lm_missioni = lm(points ~ subType, subset(missioni_players1, !(is.na(subType))))
+summary(lm_missioni)
+```
+
+So we plot the regression line on the grouped boxplots:
+```{r Plot lineare punti vs tipo missioni, fig.align='center', warning=FALSE, message=FALSE}
+
+graph<-ggplot(missioni_players1, aes(x=factor(subType), y=points, group = factor(subType)))+
+  geom_boxplot()+
+  stat_summary()+
+  stat_boxplot(geom ='errorbar', width = 0.5) +
+  labs(title = 'Linear regression Punti vs Type of mission', x = 'Type of mission', y = 'Punti') +
+  scale_x_discrete(labels = c('cib', 'double', 'ticket'))
+graph <-graph + geom_abline(intercept = lm_missioni$coefficients[1], slope = lm_missioni$coefficients[2], color = 'blue')
+graph
+```
+
+
+### Premi_mamme
+
+Importing the dataset:
+```{r import premi_mamme}
+premi_mamme <- read_csv("premi_mamme.csv", show_col_types = FALSE, 
+                        col_types = cols(deliveryMode = col_skip(),
+                                         nomepremio = col_skip()))
+premi_mamme = filter(premi_mamme, datarichiestapremio >= survey_start & datarichiestapremio <= survey_end)
+```
+This dataset has no missing values too. We skip *nomepremio* because is too specific and it's summed up in *tipopremio*. Then we skip deliveryMode because it is a redundant info respect to *formatPremio* (when the last is digital the delivery is mail, when the last is physical the delivery is home). We can see from the following piechart the distribution of rewards in physical or digital format, but that's not necessary information for the following analysis so we just skip it.
+
+```{r Barplot formatPremio, fig.align = 'center'}
+
+table(premi_mamme$formatPremio)
+
+pcts <- premi_mamme %>%
+  group_by(formatPremio) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(percentage=`n`/sum(`n`) * 100)
+
+ggplot(pcts, aes(x=1, y=percentage, fill=formatPremio)) +
+  geom_bar(stat="identity") +
+  geom_text(aes(label = paste0(round(percentage,1),"%")),position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y") +
+  theme_void() 
+
+premi_mamme = select(premi_mamme, - 'formatPremio')
+```
+
+For this dataset of rewards there is a column that gives us the type of reward. We use a piechart to show the number of rewards requested for each type:
+
+```{r Barplot premi per tipo, fig.align = 'center'}
+table(premi_mamme$tipopremio)
+
+pcts <- premi_mamme %>%
+  group_by(tipopremio) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(percentage=`n`/sum(`n`) * 100)
+
+ggplot(pcts, aes(x=1, y=percentage, fill=tipopremio)) +
+  geom_bar(stat="identity") +
+  geom_text(aes(label = paste0(round(percentage,1),"%")),position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y") +
+  theme_void() 
+
+
+```
+
+Moreover we used a boxplot to show the distribution of points used to request a reward respect to the different kinds:
+
+```{r Boxplot punti vs tipo premio, fig.align = 'center'}
+ggplot(premi_mamme, aes(x = tipopremio, y = puntipremio))+ 
+      geom_boxplot(color = 'black')+
+      stat_summary(fun.y=mean, geom="point") +
+      stat_boxplot(geom ='errorbar', width = 0.5) +
+      labs(title = 'Boxplot punti premi rispetto al tipo', x = 'Type', y = 'Punti')
+```
+
+### Conversione_ean_prodotto
+Importing the dataset:
+```{r Import conversione_ean_prodotto}
+conversione_ean_prodotto <- read_csv("conversione_ean_prodotto.csv",
+                                     col_types = cols(REFERENZA_DES = col_skip(), 
+                                                      SEGMENTO_DES = col_skip()))
+```
+This dataset has no missing values. We skip the columns *REFERENZA_DES* and *SEGMENTO_DES* because they have info that are too specific and already summed up in the column *OCCUSO_DES.*
+About this column the dataset has 4 different kinds of categories for *OCCUSO_DES.* We use a barplot to show their frequencies:
+```{r Barplot numero prodotti per ogni tipo, fig.align = 'center'}
+table(conversione_ean_prodotto$OCCUSO_DES)
+
+ggplot(conversione_ean_prodotto, aes(x = OCCUSO_DES)) +
+  geom_bar(color = 'black', fill = 'white')+
+  coord_flip()
+```
+The main product is the nappy pack (223 types), there are few wipes (13) and the other two types are residual.
+
+# Mergings
+
+First we merged *prodotti_caricati* to *conversione_ean_prodotto* in order to have all the info for every uploaded product by every player:
+
+```{r Merging prodotti caricati e covnersione_ean_prodotto}
+prodotti = merge(prodotti_caricati, conversione_ean_prodotto, all.x = TRUE)
+prodotti$TIER = as.factor(prodotti$TIER)
+```
+
+We want to see the distribution of points given for each type of product with a boxplot.
+
+```{r Boxplot punti vs tipo prodotto, fig.align = 'center'}
+ggplot(subset(prodotti, !is.na(OCCUSO_DES)), aes(x = reorder(OCCUSO_DES, points), y = points)) + 
+  geom_boxplot(color = 'black', width = 0.3, na.rm = TRUE) +
+  stat_summary(fun.y=mean, geom="point") +
+  stat_boxplot(geom = 'errorbar', width = 0.3) + 
+  labs(title = "Boxplot products' points", x = 'Type', y = 'Points')
+```
+In this case, although the average number of points obtained from loading wipes is higher than the other products, the only product of real interest is nappies, because it accounts for about 93% of the observations. The average number of points obtained from loading wipes is 306, compared to the median value of 200. This could mean a distribution with positive skewness. There are outliers on the upper side of the distribution, probably individuals who loaded many nappies. Furthermore we want to understand what kind of products composes each TIER category what are the kinds of products
+```{r Barplot numero prodotti per ogni categoria e ogni tipo, fig.align='center'}
+table(prodotti$OCCUSO_DES, prodotti$TIER)
+
+ggplot(subset(prodotti, !is.na(OCCUSO_DES)), aes(x = TIER, fill = OCCUSO_DES)) + 
+  geom_bar(position = 'dodge') +
+  stat_boxplot(geom = 'errorbar', width = 0.3) +
+  labs(title = "Barplot products' points", x = 'TIER', y = 'Points')
+```
+We note that there are different types of nappies among different TIERS, in fact we have about 30.29% premium product (*TIER 1*), 46.76% mid range products, 22.89% low range products and 0.06% *NO TIER*. As for wipes, almost 35% are *TIER 1*, 51% *TIER 2* and 14% *TIER 3*. At this point we use a boxplot to see the distribution of points taken for the uploaded product respect to different kind of products (in order of premium level *NOTIER*, *TIER3*, *TIER2*, *TIER1*):
+  
+```{r Boxplot punti vs categoria prodotti, fig.align = 'center'}
+ggplot(subset(prodotti, !is.na(TIER)), aes(x = reorder(TIER, points), y = points)) + 
+  geom_boxplot(color = 'black', width = 0.3, na.rm = TRUE) +
+  stat_summary(fun.y=mean, geom="point") +
+  stat_boxplot(geom ='errorbar', width = 0.2) +
+  labs(title = "Boxplot products' points", x = 'TIER', y = 'Points')
+```
+As might be expected, on average, more points are obtained from loading premium products (*TIER1*), compared to mid-range (*TIER2*) and low range (*TIER3*). The product categories show asymmetric distributions with positive skewness, and thus tails on the right side.
+```{r Modello lineare punti vs categoria prodotti}
+prodotti1 <- prodotti
+
+prodotti1$TIER = recode(prodotti1$TIER, 'NO TIER' = 1, 'TIER3' = 2, 'TIER2' = 3, 'TIER1' = 4)
+lm_prodotti = lm(points ~ TIER, subset(prodotti1, !(is.na(TIER))))
+summary(lm_prodotti)
+```
+
+So we plot the regression line on the grouped boxplots:
+```{r Plot lineare Punti vs Categoria, fig.align='center'}
+
+graph<-ggplot(subset(prodotti1, !(is.na(TIER))), aes(x=factor(TIER), y=points, group = factor(TIER)))+
+  geom_boxplot()+
+  stat_summary()+
+  stat_boxplot(geom ='errorbar', width = 0.5)+
+  labs(title = 'Linear regression Punti vs TIER', x = 'TIER', y = 'Punti') +
+  scale_x_discrete(labels = c('NO TIER', 'TIER3', 'TIER2', 'TIER1'))
+graph <-graph + geom_abline(intercept = lm_prodotti$coefficients[1], slope = lm_prodotti$coefficients[2], color = 'blue')
+graph
+```
+We use a linear regression model to test the significance of the link between the dependent variable points and the independent variable TIER. The p-value has a very small value, so the relationship is significant (an ANOVA would be better).
+
+```{r Anova prodotti-TIER}
+
+a = aov(points ~ TIER, data = prodotti)
+summary(a)
+```
+We perform an ANOVA test and since the p-value is very small, we reject the H0 hypothesis of equality of averages. There is a significant difference between the averages of the TIER categories, so it makes sense to use this variable.
+
+```{r, fig.align = 'center'}
+plot(TukeyHSD(a, "TIER", ordered = T, main = 'One way'))
+```
+
+The next merging is between anagrafica and accessi_app. Basically in this way we want to understand how many of the registered players were active in the survey period. We do that taking as info for every player the last access registered:
+
+```{r Ultimo accesso per ogni player}
+last_access = accessi_app %>%
+group_by(id_player)%>%
+summarise(last_access = max(updated_at))
+
+# Only players that have made at least one access
+active_users = merge(last_access, anagrafica, all.x = TRUE)
+```
+
+This last dataset (active_users) is the basis of the analysis. We have all players that made at least one access in the survey period. So we know that for a great part of them we have enough information to do the churning analysis. On this dataset we add different info from the different datasets.  
+
+- We can take the interval of time from the last access recorded and the end of the survey:
+```{r Intervallo di tempo tra ultimo accesso di un player e fine raccolta dati}
+active_users$last_time =  survey_end - as.Date(active_users$last_access) 
+active_users$last_time = as.double(active_users$last_time)
+```
+
+- We can extract the interval of time between the first and the last access for every player:
+
+```{r}
+
+app_time = accessi_app %>%
+  group_by(id_player) %>%
+  summarise(tempo_app = as.Date(max(updated_at)) - as.Date(min(updated_at)))
+
+# agiungo la variabile tempo app e la converto in double 
+active_users = merge(active_users, app_time, all.x = TRUE)
+active_users$tempo_app = as.double(active_users$tempo_app)
+```
+
+- The number of products uploaded by every player:
+```{r Numero di prodotti caricati da ogni player}
+prod_per_user = prodotti_caricati %>%
+  group_by(id_player)%>%
+  summarise(num_prod = n())
+
+active_users = merge(active_users, prod_per_user, all.x = TRUE)
+```
+
+- With the number of products we added also four columns to show how many of them falls in the categories NOTIER, TIER3, TIER2, TIER1:
+```{r Per ogni player quanti prodotti per categoria, warning=FALSE, message=FALSE}
+# Variabile categorica TIER
+TIER_num = prodotti %>%
+  group_by(id_player, TIER) %>%
+  summarise(num = n())
+
+TIER1_num = filter(TIER_num, TIER == 'TIER1')
+colnames(TIER1_num)[3] = 'TIER1'
+TIER1_num = TIER1_num[-2]
+
+
+TIER2_num = filter(TIER_num, TIER == 'TIER2')
+colnames(TIER2_num)[3] = 'TIER2'
+TIER2_num = TIER2_num[-2]
+
+
+TIER3_num = filter(TIER_num, TIER == 'TIER3')
+colnames(TIER3_num)[3] = 'TIER3'
+TIER3_num = TIER3_num[-2]
+
+
+active_users  = merge(active_users, TIER1_num, all.x = TRUE)
+active_users  = merge(active_users, TIER2_num, all.x = TRUE)
+active_users  = merge(active_users, TIER3_num, all.x = TRUE)
+```
+
+- The number of rewards requested:
+```{r Per ogni player quanti premi per ogni tipo}
+
+rewards = premi_mamme %>%
+  group_by(id_player)%>%
+  summarise(num_reward = n())
+
+active_users = merge(active_users, rewards, all.x = TRUE)
+```
+
+- In this case we added other 3 columns to see how many of the rewards fall in the different categories (*basic*, *special*, *gift*):
+```{r, warning=FALSE, message=FALSE}
+tipo_premio = premi_mamme %>%
+  group_by(id_player, tipopremio) %>%
+  summarise(num = n())
+
+basic = filter(tipo_premio, tipopremio == 'basic')
+colnames(basic)[3] = 'basic'
+basic = basic[-2]
+
+
+special = filter(tipo_premio, tipopremio == 'special')
+colnames(special)[3] = 'special'
+special = special[-2]
+
+active_users  = merge(active_users, basic, all.x = TRUE)
+active_users  = merge(active_users, special, all.x = TRUE)
+```
+
+- The number of access for each player in the survey period, along with the number of days in mean (respect to the *app_time*) that a player take to access:
+```{r Numero accessi per ogni player}
+
+access_freq = accessi_app %>%
+  group_by(id_player)%>%
+  summarise(num_access = n())
+
+active_users = merge(active_users, access_freq, all.x = TRUE)
+
+```
+
+- The number of missions done by each player in the survey period:
+```{r Numero di missioni per ogni player}
+
+missions_num = missioni_players %>%
+  group_by(id_player)%>%
+  summarise(num_missioni = n())
+
+active_users = merge(active_users, missions_num, all.x = TRUE)
+```
+
+- We add the columns to specify the missions' type:
+```{r, message = FALSE, warning=FALSE, message=FALSE}
+misstype_num = missioni_players %>%
+  group_by(id_player, subType) %>%
+  summarise(num = n())
+
+cib_num = filter(misstype_num, subType == 'cib')
+colnames(cib_num)[3] = 'cib'
+cib_num = cib_num[-2]
+
+
+double_num = filter(misstype_num, subType == 'double')
+colnames(double_num)[3] = 'double'
+double_num = double_num[-2]
+
+
+ticket_num = filter(misstype_num, subType == 'ticket-punti')
+colnames(ticket_num)[3] = 'ticket-punti'
+ticket_num = ticket_num[-2]
+
+active_users  = merge(active_users, cib_num, all.x = TRUE)
+active_users  = merge(active_users, double_num, all.x = TRUE)
+active_users  = merge(active_users, ticket_num, all.x = TRUE)
+
+```
+
+
+- The sum of points for each player taken by the uploaded products:
+```{r Somma punti ottenuti dai prodotti caricati}
+
+points_num = prodotti_caricati %>%
+  group_by(id_player)%>%
+  summarise(points_prodotti = sum(points))
+
+active_users = merge(active_users, points_num, all.x = TRUE)
+```
+
+- The sum of points for each player taken by the done missions:
+```{r Somma punti ricavati dai player per le missioni}
+
+points_mission = missioni_players %>%
+  group_by(id_player)%>%
+  summarise(points_missioni = sum(points))
+
+active_users = merge(active_users, points_mission, all.x = TRUE)
+```
+
+- The sum of points spent by each player to request a reward:
+
+```{r Somma punti spesi per i premi dai player}
+## Somma punti spesi per richiesta premi
+points_expense = premi_mamme %>%
+  group_by(id_player)%>%
+  summarise(points_premi = sum(puntipremio))
+
+active_users = merge(active_users, points_expense, all.x = TRUE)
+```
+
+Now in creating all this columns some NA values were created so we set them equal to zero given that they are double columns:
+
+```{r Trasformare gli NA in 0 nelle colonne double}
+## Tutti i NA per le colonne calcolate 'double' imposti = 0
+active_users[8:length(active_users)][is.na(active_users[8:length(active_users)])] = 0
+```
+Then we can remove from the dataset the players that have not given birth till the end of the survey or that have a NA on the child's age. Also the players that have less than one week of app usage because the next analysis are based on week frequencies and so for these players we would have very few info.
+
+```{r}
+active_users = filter(active_users, tempo_app >= 7 & !is.na(ETA_MM_BambinoTODAY))
+active_users = filter(active_users, ETA_MM_BambinoTODAY >-1 | num_prod != 0 | num_missioni != 0 | num_reward != 0)
+```
+
+Now we can add the week frequencies for every column (for the points ones the frequency is how many hundreds of points a week):
+```{r}
+active_users$week_access = round(active_users$num_access / (active_users$tempo_app/7), 2)
+
+# Missioni
+active_users$week_mission = round(active_users$num_missioni / (active_users$tempo_app/7), 2)
+active_users$week_cib = round(active_users$cib / (active_users$tempo_app/7), 2)
+active_users$week_double = round(active_users$double / (active_users$tempo_app/7), 2)
+active_users$week_ticket = round(active_users$ticket / (active_users$tempo_app/7), 2)
+# Prodotti caricati
+active_users$week_prod = round(active_users$num_prod/(active_users$tempo_app/7), 2)
+active_users$week_TIER1 = round(active_users$TIER1/(active_users$tempo_app/7), 2)
+active_users$week_TIER2 = round(active_users$TIER2/(active_users$tempo_app/7), 2)
+active_users$week_TIER3 = round(active_users$TIER3/(active_users$tempo_app/7), 2)
+
+# Premi richiesti
+active_users$week_reward = round(active_users$num_reward/(active_users$tempo_app/7), 2)
+active_users$week_special = round(active_users$special/(active_users$tempo_app/7), 2)
+active_users$week_basic = round(active_users$basic/(active_users$tempo_app/7), 2)
+
+# Punti ottenuti e spesi
+active_users$week_prodpoints = round((active_users$points_prodotti/100)/(active_users$tempo_app/7), 2)
+active_users$week_misspoints = round((active_users$points_missioni/100)/(active_users$tempo_app/7), 2)
+active_users$week_rewpoints = round((active_users$points_premi/100)/(active_users$tempo_app/7), 2)
+```
+ 
+
+## Analysis dataset
+
+```{r Modello lineare punti vs numero prodotti, fig.align = 'center'}
+lm_punti_prodotti = lm(points_prodotti ~ num_prod, active_users)
+summary(lm_punti_prodotti)
+
+par(mfrow=c(2,2))
+plot(lm_punti_prodotti)
+par(mfrow=c(1,1))
+
+ggplot(active_users, aes(x = num_prod, y = points_prodotti)) + 
+  geom_point()+
+  geom_abline(intercept = lm_punti_prodotti$coefficients[1], slope = lm_punti_prodotti$coefficients[2], col = 'blue') + 
+  labs(title = "Linear model between products' number and points", x = "# products", y = 'Points')
+```
+As expected, there is a linear relationship between the points obtained from the loading of products and the number of products loaded. This is confirmed by the small value assumed by the p-value, which makes it possible to reject the null hypothesis H0, according to which the regression coefficient is equal to zero, i.e. there would be no relationship at all between the dependent variable and the explanatory variable. In this case, the addition of a product produces an average increase of 201.075 points. Considering the Multiple R-squared we observe that the linear model describes 67% of the relationship between the variables.
+
+```{r Modello lineare punti vs num_missioni, fig.align = 'center'}
+lm_punti_missioni = lm(points_missioni ~ num_missioni, active_users)
+summary(lm_punti_missioni)
+
+par(mfrow=c(2,2))
+plot(lm_punti_missioni)
+par(mfrow=c(1,1))
+ggplot(active_users, aes(x = num_missioni, y = points_missioni)) + 
+  geom_point()+
+  geom_abline(intercept = lm_punti_missioni$coefficients[1], slope = lm_punti_missioni$coefficients[2], col = 'blue') + 
+  labs(title = "Linear model between missions' number and points", x = "# missions", y = 'Points')
+```
+
+In this case, the relationship between the number of missions performed and the points obtained is shown. Here again, it is possible to reject the null hypothesis when looking at the p-value. By carrying out one mission, there is an increase of 713.383 points on average. Considering the Multiple R-squared we observe that the linear model describes 66.14% of the relationship between the variables.  
+```{r Modello lineare punti vs numero premi, fig.align = 'center',warning=FALSE}
+lm_punti_premi = lm(points_premi ~ num_reward, active_users)
+summary(lm_punti_premi)
+
+
+ggplot(filter(active_users, num_reward > 0), aes(x = factor(num_reward), y = points_premi)) + 
+  geom_boxplot() +
+  stat_summary() +
+  stat_boxplot(geom = "errorbar", width = 0.3) +
+  geom_abline(intercept = lm_punti_premi$coefficients[1], slope = lm_punti_premi$coefficients[2], col = 'blue') + 
+  labs(title = "Linear model reward points vs rewards' number", x = "# Rewards", y = "Reward Points")
+```
+
+
+
+```{r Histogram tempo_app, fig.align = 'center'}
+ggplot(active_users, aes(x = tempo_app)) + 
+  geom_histogram(color = 'black', fill = 'white', binwidth = 1) +
+  labs(title = "Histogram interval of time between first and last access", x = "Days", y = "Count")
+
+```
+
+The distribution presents a tail on the left side of the distribution (confirmed by the negative skewness -0.95), and is platykurtic, i.e. less sharp than a normal distribution, in fact it presents a negative kurtosis value (-0.95). The distribution concentrates on a rather high value, in fact it presents a mode of 174. Fifty per cent of the individuals spent less than 155 days on the app and the other 50 are above that. The problem could be that an individual has only logged in a few times, but at large temporal distances. 
+```{r Histogram last_time, fig.align = 'center'}
+ggplot(active_users, aes(x = last_time)) + 
+  geom_histogram(color = 'black', fill = 'white', binwidth = 1) + 
+  labs(title = "Histogram interval of time between last access and end survey", x = 'Days', y = 'Count')
+```
+
+The distribution has a tail on the right-hand side of the distribution (confirmed by the positive skewness 2.28), and is leptokurtic, i.e. sharper than a normal distribution, in fact it has a positive kurtosis value (4.51). 50% of the observations made their last access within the last week after the end of the survey, the majority on the last day.
+
+# Clustering
+
+Now in order to study the dataset we first use a principal component analysis and then a hierarchical clustering on them. As variables for the PCA we use the global ones. We display a correlation matrix to check that the correlation between the variables is different from zero, because it would not make sense to perform a principal component analysis on uncorrelated variables; and different from 1, because perfectly correlated variables could be summarised by a single principal component.
+
+```{r, fig.align = 'center'}
+global_names = c('id_player', 'ETA_MM_BambinoTODAY','last_time', 'tempo_app', 'num_prod','num_reward','num_access','num_missioni','points_prodotti', 'points_missioni','points_premi')
+
+test = select(active_users, all_of(global_names))
+colnames(test)[2] = 'Età'
+
+correlation_matrix<-cor(test[-1])
+corrplot(correlation_matrix, method="number")
+```
+
+```{r, fig.align='center'}
+pca.data <- PCA(test[, -1], scale.unit = TRUE, graph = FALSE)
+fviz_eig(pca.data, addlabels = TRUE)
+```
+
+From the scree plot we observe that the first main component expresses 40% of the total variability, the second component 15.7%, the third 11.6% and so on. At the seventh main component there is an elbow in the curve the line flattens out. 
+
+```{r, fig.align='center'}
+fviz_pca_var(pca.data, col.var = "cos2",
+            gradient.cols = c("blue", "purple", 'red'),
+            repel = TRUE)
+```
+
+The quality of representation of the variables on factor map is called cos^2 (square cosine, squared coordinates). From the graphical representation and from the observation of the variable loadings (the eigenvalues of the correlation matrix) of the first two main components, we can see the presumed age of the child is that worse represented, it has the shortest arrow and an extremely low value of $cos^2$. All other variables are more arranged along the first dimension, except for the number of rewards and points needed to obtain them, which have higher loadings in the second dimension. Part of the variability of the number of missions is expressed by the third dimension, that we notice from a value of the variable loadings quite high and from the arrow that does not have maximum length. Taking into account the $cos^2$ between the variables (graphically the angle between the arrows of the variables), we note that: the number of prizes is very related to the points to get the prizes; the number of missions, the points obtained from the missions, the number of products loaded, the points obtained from the products loaded and the number of accesses are interrelated; the time spent in the app does not seem to be related to the number of prizes and the points needed to obtain the prizes; the time spent in the app is inversely related to the time elapsed between the last access and the end of the survey date.
+
+```{r, fig.align='center', message=FALSE, warning=FALSE}
+pca.var = c()
+
+for (i in 1:10){
+  pca.var = append(pca.var, pca.data$eig[i,3])
+}
+
+data_frame(val = pca.var) %>%
+          ggplot(aes(x = as.factor(1:10),y = val, group = 1)) + 
+          geom_point(color = "black") +
+          geom_line(linetype = 'dashed') +
+          labs(title = 'Cumulative sum of variance', x = '# Principal component', y = '% Variance')
+```
+
+
+Then we clusterized the data with a hierarchical clustering on the principal components
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+res.hcpc <- HCPC(pca.data, graph = FALSE)
+
+data <- active_users
+data$clust <- res.hcpc$data.clust$clust
+
+fviz_cluster(res.hcpc,
+             repel = TRUE,            # Avoid label overlapping
+             show.clust.cent = TRUE, # Show cluster centers
+             palette = "jco",         # Color palette see ?ggpubr::ggpar
+             ggtheme = theme_minimal(),
+             main = "Factor map"
+             )
+
+res.hcpc$desc.var$quanti
+
+res.hcpc$desc.axes$quanti
+
+```
+From the output above, it can be seen which variables are most significantly associated with clusters. Higher association is linked to higher values of v test. Considering the cluster 1, we can see that only the mean value in category of *last_time* is higher than the overall mean, while all other variables have lower values. We can conclude that the cluster 1 is characterized by a high rate only of last_time. Cluster 2 is mostly represented by all the variables except for *num_reward*, *points_premi* and *last_time*, while in cluster 3 there is a low rate of *last_time.*
+
+We made a clusterization of the column *Regione* with three clusters: *Nord*, *Center*, *Sud.* Finally a summary of the final dataset:
+```{r}
+
+nord_italia = c("VALLE D'AOSTA", "PIEMONTE", "LOMBARDIA", "EMILIA-ROMAGNA", "TRENTINO-ALTO ADIGE", "LIGURIA", "VENETO", "FRIULI-VENEZIA GIULIA")
+centro_italia = c("UMBRIA", "LAZIO", "MARCHE", "TOSCANA")
+sud_italia = c("ABRUZZO", "CAMPANIA", "BASILICATA", "CALABRIA", "PUGLIA", "MOLISE", "SICILIA", "SARDEGNA")
+
+
+data$Regione[data$Regione %in% nord_italia] = "NORD"
+data$Regione[data$Regione %in% centro_italia] = "CENTRO"
+data$Regione[data$Regione %in% sud_italia] = "SUD"
+
+data$Regione = as.factor(data$Regione)
+data$id_player = as.character(data$id_player)
+
+summary(data[, 3:length(data)])
+
+```
+
+We can see the distribution of data in every cluster:
+```{r}
+table(data$clust)
+```
+
+We want to understand the behavior of the players in the different clusters, so we begin doing boxplots of the different variables for each of them.
+
+- Childs' age at the survey's begin
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = ETA_MM_BambinoTODAY-6)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") + 
+  labs(title = "Boxplots childs' age when survey started", x = 'Cluster', y = "Età (mesi)")
+```
+The age of the child at the beginning of the survey is taken into account and for this we subtract 6 months. Considering clusters 2 and 3, they have similar median and mean (about 11 months), slightly higher in the case of cluster 3. The interquartile range is also similar, but we notice that cluster 3 is slightly shifted upwards. The minimum point is also higher in cluster 3, while the maximum point is the same for all 3 clusters. The first cluster, on the other hand, has a mean that is lower than the other two, the same can be said of the median that coincides with the first quartile of the second cluster. Maximum and minimum points coincide with those of the second cluster. A positive asymmetry can be observed in all three clusters, with a mean higher than the median (accentuated in the case of the first cluster) and, therefore, a tail on the right-hand side of the distribution.
+
+- Time between last access and end survey
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = last_time)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots period between last access and end survey", x = 'Cluster', y = "Days")
+```
+
+In the first cluster, we note that the difference between the last access and the end date of the survey is significantly higher than in the other 2 clusters. This is because we note that 50% of the observations are above the maximum value of the other 2 clusters and that individuals on average left the app almost 50 days before the end. There are numerous outliers on the upper side of the distribution, especially for the second and third clusters.
+
+- Time between first and last access
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = tempo_app)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots period between first and last access", x = 'Cluster', y = "Days")
+```
+In the first cluster, the interquartile range is significantly greater than in the other two. We note that the maxima coincide, while at the bottom of the distribution, the second and third clusters have numerous outliers. The first cluster presents an almost symmetrical distribution, with a slight positive skewness, while the other 2 have negative skewness. The first cluster, therefore, seems to collect all the less active individuals, with less time spent using the app than the other two clusters. There may, however, be a bias for individuals who have accessed the app a few times, but at large temporal distances.
+
+- Access number
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = num_access)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  ylim(0,200) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots accesses' number", x = 'Cluster', y = "# accesses")
+```
+
+Previous doubts are dispelled by analysing the number of accesses. As expected, the first cluster has the lowest number of hits, with a mean of(). There is an increasing trend, of mean, median and interquartile difference, from the first cluster to the second and again to the third. All three clusters have positive skewness and have outliers on the upper side of the distribution.
+
+- Products' number
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = num_prod)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots products' number", x = 'Cluster', y = "# products")
+```
+
+
+- Missions' number
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = num_missioni)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots missions' number", x = 'Cluster', y = "# missions")
+```
+
+Further confirmation comes from the number of missions, which follows the same behaviour between the clusters as in the previous graphs. In fact, the users in the first cluster, assumed to be less active, have an average number of missions of zero. Overall, the average number of missions carried out is low, peaking in cluster 3 (3).
+
+- Products' points
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = points_prodotti)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots products' points", x = 'Cluster', y = "Points")
+```
+
+Same trend as for points obtained from product uploads.
+
+- Missions' points
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = points_missioni)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots missions' points", x = 'Cluster', y = "Points")
+  
+```
+
+The trend mirrors that of the number of missions.  
+
+- Rewards' points
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = points_premi)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots rewards' points", x = 'Cluster', y = "Points")
+```
+
+Individuals in cluster 3 requested more rewards and thus spent more points. This is because they have a greater availability of points, resulting from loading more products and carrying out more missions than the other 2 clusters.  
+
+- Access frequency
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = week_access)) +
+  geom_boxplot() +
+  ylim(0,25) + 
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots accesses' weekly frequency", x = 'Cluster', y = "Weekly frequency")
+```
+
+In the case of weekly access frequencies, there is also an upward trend from the first to the third cluster, but with smaller differences compared to the number of overall accesses.  
+
+- Mission frequency
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = week_mission)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  ylim(0,1) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots missions' weekly frequency", x = 'Cluster', y = "Weekly frequency")
+```
+
+The graphs again show an upward trend, but the information is quite residual, as the frequencies of the missions are small. Considering, in fact, the cluster with the highest values, i.e. the third one, they show an average weekly access frequency of almost zero.  
+
+- Products frequency
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = week_prod)) +
+  geom_boxplot() +
+  ylim(0,10)+
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots products' weekly frequency", x = 'Cluster', y = "Weekly frequency")
+```
+
+In the case of weekly product loading frequencies, there is also an increasing trend from the first to the third cluster, but with smaller differences compared to the number of overall product loading.  
+
+- Rewards frequency
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = week_reward)) +
+  geom_boxplot() +
+  ylim(0,0.2)+
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots rewards' weekly frequency", x = 'Cluster', y = "Weekly frequency")
+```
+
+
+
+- Products' points frequency
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = week_prodpoints)) +
+  geom_boxplot() +
+  ylim(0,25) + 
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots products points' weekly frequency", x = 'Cluster', y = "Weekly frequency")
+```
+
+In the case of the weekly frequencies of points obtained from product uploads, there is also an upward trend from the first to the third cluster, but with smaller differences compared to the number of points obtained from global product uploads.
+
+- Missions' points frequency
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = week_misspoints)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  ylim(0,10) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots missions points' weekly frequency", x = 'Cluster', y = "Weekly frequency")
+```
+
+- Rewards' points frequency
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+ggplot(data, aes(x = clust, y = week_rewpoints)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3) +
+  ylim(0,10) +
+  stat_summary(fun.y=mean, geom="point") +
+  labs(title = "Boxplots rewards points' weekly frequency", x = 'Cluster', y = "Weekly frequency")
+```
+
+- Products number and TIER
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+dfm_prod <- melt(data[,c('clust','num_prod', 'TIER1','TIER2', 'TIER3')],id.vars = 1)
+
+ggplot(dfm_prod, aes(x = clust,y = value, color = variable)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3, position = position_dodge(0.75)) +
+  stat_summary(fun.y=mean, geom="point", position = position_dodge(0.75)) +
+  labs(title = "Boxplots products' number (with categories)", x = 'Cluster', y = "# products")
+```
+
+There is an increasing pattern between the number of products from the first cluster to the third cluster. In all 3 clusters, TIER 2 products are present in larger quantities on average and TIER3 products in smaller quantities; this pattern is followed in all 3 clusters
+
+- Products and TIER's frequency
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+dfm_prod <- melt(data[,c('clust','week_prod', 'week_TIER1','week_TIER2', 'week_TIER3')],id.vars = 1)
+
+ggplot(dfm_prod, aes(x = clust,y = value, color = variable)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3, position = position_dodge(0.75)) +
+  ylim(0,10) +
+  stat_summary(fun.y=mean, geom="point", position = position_dodge(0.75)) +
+  labs(title = "Boxplots products' weekly frequency (with categories)", x = 'Cluster', y = "Weekly frequency")
+```
+
+- Rewards and types
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+dfm_rew <- melt(data[,c('clust','num_reward', 'basic', 'special')],id.vars = 1)
+
+ggplot(dfm_rew, aes(x = clust,y = value, color = variable)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3, position = position_dodge(0.75)) +
+  stat_summary(fun.y=mean, geom="point", position = position_dodge(0.75)) +
+  labs(title = "Boxplots rewards' number (with categories)", x = 'Cluster', y = "# rewards")
+```
+
+In this graph, one can see that the averages and medians of clusters 1 and 2 are zero and there are some upward outliers. With regard to cluster 3, on the other hand, there is an average and median around unity with regard to the basic type of reward, while with regard to the special type of reward there is a median tending towards zero and a slightly higher average. Even the most active users (cluster 3) win at most one reward on average
+
+- Rewards and types' frequency
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+dfm_rew <- melt(data[,c('clust','week_reward', 'week_basic', 'week_special')],id.vars = 1)
+
+ggplot(dfm_rew, aes(x = clust,y = value, color = variable)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3, position = position_dodge(0.75)) +
+  stat_summary(fun.y=mean, geom="point", position = position_dodge(0.75)) +
+  labs(title = "Boxplots rewards' weekly frequency (with categories)", x = 'Cluster', y = "Weekly frequency")
+```
+
+- Missions and types
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+dfm_miss <- melt(data[,c('clust', 'num_missioni', 'cib', 'double', 'ticket-punti')],id.vars = 1)
+
+ggplot(dfm_miss, aes(x = clust,y = value, color = variable)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3, position = position_dodge(0.75)) +
+  stat_summary(fun.y=mean, geom="point", position = position_dodge(0.75)) +
+  labs(title = "Boxplots missions' number (with categories)", x = 'Cluster', y = "# missions")
+```
+
+In cluster 1, with the exception of a few outliers, all values tend to 0. In cluster 2, only in the double type mean and median seem to tend towards 1, whereas the other types show values tending towards 0. In addition, there are also a few outliers in this case. In cluster 3, we note that the number of missions increases, albeit only slightly, namely missions of type double and ticket points are present on average. There is also a double interquartile difference of ticket points compared to double.
+
+- Missions and types' frequency
+
+```{r, fig.align = 'center', message=FALSE, warning=FALSE}
+dfm_miss <- melt(data[,c('clust', 'week_mission', 'week_cib', 'week_double', 'week_ticket')],id.vars = 1)
+
+ggplot(dfm_miss, aes(x = clust,y = value, color = variable)) +
+  geom_boxplot() +
+  stat_boxplot(geom ='errorbar', width = 0.3, position = position_dodge(0.75)) +
+  stat_summary(fun.y=mean, geom="point", position = position_dodge(0.75)) +
+  labs(title = "Boxplots missions' weekly frequency (with categories)", x = 'Cluster', y = "Weekly frequency")
+```
+
+In our analysis we saw how from the third cluster to the first the player go from the least frequent to the most. So we call differently the values of clusters:
+```{r}
+
+data$clust = as.integer(data$clust)
+data$clust[data$clust == 1] = 'Rare'
+data$clust[data$clust == 2] = 'Often'
+data$clust[data$clust == 3] = 'Frequent'
+data$clust = as.factor(data$clust)
+```
+
+
+# Definition of Churn
+
+
+We want a customer churn predictive model to predict the churn in advance, therefore, we define a churner in terms of observation period (*OP*) and churn prediction period (*CP*). An *OP* is a period for observing a user’s plays, and the play log data are used to create frequency features and predict churn for the following *CP* days. A *CP* is a period for determining whether a user actually churned or not.
+
+```{r, message=FALSE, warning=FALSE}
+library("png")
+setwd("C:/Users/gltut/Desktop/Corsi/Statistical Data Analisys/FATER")
+pp <- readPNG("Churn.png")
+plot.new() 
+rasterImage(pp,0,0,1,1)
+```
+
+In *Fig* above, two examples of churner and active users are shown. User 1 has two play records in *OP* but no play record in *CP*, and therefore User 1 is a churner. In contrast, if a user has play records in the *CP*, the user is called an active (no churn) user, for example, User 2 has two play records in the *OP* and a record in the *CP*.
+
+The churn window is set based on the average absence from the game (in days). Therefore, the following equation from the research was used to determine churners:  
+*recency > avg_between + 2 ∗ std_between*  
+where *recency* is the number of inactive days from the last play, *avg_between* is average days between play, and *std_between* is the standard deviation of days between play.
+
+Therefore, first we use the time variables to understand if a player stopped to use the app. We use the variable where we store how many days it takes for a player to access. If the time between the last access and the end of the survey is greater than this frequency plus the standard deviation than for our analysis the player has left the app.
+```{r}
+data$days_toaccess = round(data$tempo_app / data$num_access, 2)
+data$churn = 0
+
+for (i in 1:dim(data)[1]){
+  ultimo_acc  = data$last_time[i]
+  media_accessi = data$days_toaccess[i] + sd(data$days_toaccess)
+  if ( ultimo_acc > media_accessi){
+    data$churn[i] = "CHURN"
+  }
+  else{
+    data$churn[i] = "NOCHURN"
+  }
+}
+```
+
+Then we extract the percentage of churn in the entire dataset
+```{r}
+b = table(data$churn)
+pct_churn = b[1]/(b[1] + b[2])
+as.double(pct_churn)
+```
+ Finally we want to see the percentage of churn in every cluster:
+```{r}
+a = table(data$clust, data$churn)
+
+pct = c(a[1,1]/(a[1,1] + a[1,2]), a[2,1]/(a[2,1] + a[2,2]), a[3,1]/(a[3,1] + a[3,2]))
+pct = round(pct,2)
+pct
+a
+```
+We can see that in the first cluster the churn percentage is higher. We expect that because in this cluster we find the players least frequent and so the most likely to leave the app. The other two clusters have about the same percentage of churners. Now we want to generate a supervised model to predict churn taking into account the frequencies of each player
+
+
+# Supervised models
+
+The three common algorithms for churn prediction were selected based on the latest gaming industries literature [1]. These algorithms are logistic regression, decision tree and random forest.
+
+[1] Kiguchi, M., Saeed, W., & Medi, I. (2022). Churn prediction in digital game-based learning using data mining techniques: logistic regression, decision tree, and random forest. Applied Soft Computing, 118, 108491.
+
+
+```{r, fig.align = "center", message=FALSE, warning=FALSE}
+frequenze_general = c("week_access", "week_mission", "week_prod", "week_reward", "week_prodpoints", "week_misspoints", "week_rewpoints", "churn")
+
+frequencies_general_data = select(data, frequenze_general)
+
+M<-cor(frequencies_general_data)
+corrplot(M, method="number")
+
+```
+
+
+
+```{r}
+# Load Dataset
+dataset <- frequencies_general_data
+dataset$churn = as.factor(dataset$churn)
+x <- dataset[,1:7]
+y <- dataset[,8]
+
+
+folds <- 5
+bal_acc_rf=c()
+bal_acc_dt=c()
+bal_acc_lr=c()
+auc_rf=c()
+auc_dt=c()
+auc_lr=c()
+precision_rf=c()
+precision_dt=c()
+precision_lr=c()
+recall_rf=c()
+recall_dt=c()
+recall_lr=c()
+
+#Definizione dei dataset dell'outer loop
+cvIndex <- createMultiFolds(y, folds, times=10)
+
+
+```
+
+- Evaluation Criteria
+ 
+For each classification algorithm, hyperparameters tuning and model selection were carried out using the repeated stratified (for target variable) nested k-fold cross validation with a number of repetitions equal to 10 and a number of folds equal to 5 for inner loop and outer loop, respectively.
+For each repetition, the actual and predicted classifications have been matched so as to fill the 2 × 2 confusion matrices and assess the large-sample predictive performance via Balanced Accuracy, precision, recall and the F-measure.
+
+Nested cross-validation is an approach to model hyperparameter optimization and model selection that attempts to overcome the problem of overfitting the training dataset. The procedure involves treating model hyperparameter optimization as part of the model itself and evaluating it within the broader k-fold cross-validation procedure for evaluating models for comparison and selection.
+
+As such, the k-fold cross-validation procedure for model hyperparameter optimization is nested inside the k-fold cross-validation procedure for model selection. The use of two cross-validation loops also leads the procedure to be called “double cross-validation.”
+
+
+
+```{r, fig.align = 'center', warning=FALSE, message=FALSE}
+for (i in 1:length(cvIndex)) {
+  
+  #Definizione dei dataset da usare nell'inner loop
+  dataset_train_outer=dataset[cvIndex[[i]],]
+  dataset_test_outer=dataset[-cvIndex[[i]],]
+  x_train_outer=x[cvIndex[[i]],]
+  x_test_outer=x[-cvIndex[[i]],]
+  y_train_outer=y[cvIndex[[i]]]
+  y_test_outer=y[-cvIndex[[i]]]
+  
+  recipe <- recipe(churn~., data=dataset_train_outer)
+  folds <- vfold_cv(dataset_train_outer, strata = churn, v = 5)
+  
+  set.seed(123)
+
+  ####################### Logistic Regression  ########################
+  
+  lg <- logistic_reg(penalty = tune(), mixture = tune()) %>%
+    set_engine("glmnet")
+  
+  
+  lg_grid <- grid_regular(mixture(),
+                          penalty(),levels=20)
+  
+  
+  lg_wf <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(lg)
+  
+  lg_res <- 
+    lg_wf %>% 
+    tune_grid(
+      resamples = folds,
+      grid = lg_grid, 
+      metrics = metric_set(yardstick::recall)
+    )
+  best_lg <- lg_res %>%
+    select_best("recall")
+  
+  lr <- logistic_reg(mixture = best_lg$mixture, penalty = best_lg$penalty)
+  
+  lr_fit <-
+    lr %>%
+    set_engine("glmnet") %>%
+    fit(churn ~., data = dataset_train_outer)
+  
+  predictions_lr=predict(lr_fit, dataset_test_outer)
+  
+  predictions_numeric = as.character(predictions_lr$.pred_class)
+  predictions_numeric[predictions_numeric =='NOCHURN'] = 0
+  predictions_numeric[predictions_numeric =='CHURN'] = 1
+  predictions_numeric = as.numeric(predictions_numeric)
+  
+  bal_acc_lr[i]=bal_accuracy_vec(y_test_outer,predictions_lr$.pred_class)
+  auc_lr[i]=yardstick::roc_auc_vec(y_test_outer,predictions_numeric)
+  precision_lr[i]=yardstick::precision_vec(y_test_outer,predictions_lr$.pred_class)
+  recall_lr[i]=yardstick::recall_vec(y_test_outer,predictions_lr$.pred_class)
+  
+  
+    ####################### Decision Tree  ########################
+
+  dt_spec <-
+    decision_tree(
+      cost_complexity = tune(),
+      tree_depth = tune()
+    ) %>%
+    set_engine("rpart") %>%
+    set_mode("classification")
+
+  tree_grid <- grid_regular(cost_complexity(),
+                            tree_depth(),
+                            levels = 10)
+
+  tree_wf <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(dt_spec)
+
+  tree_res <-
+    tree_wf %>%
+    tune_grid(
+      resamples = folds,
+      grid = tree_grid,
+      metrics = metric_set(yardstick::recall)
+    )
+
+  best_tree <- tree_res %>%
+    select_best("recall")
+
+  dt <- decision_tree(cost_complexity = best_tree$cost_complexity, tree_depth=best_tree$tree_depth, mode = 'classification')
+
+  dt_fit <-
+    dt %>%
+    set_engine("rpart") %>%
+    fit(churn ~., data = dataset_train_outer)
+
+  predictions_dt=predict(dt_fit, dataset_test_outer)
+
+  predictions_numeric = as.character(predictions_dt$.pred_class)
+  predictions_numeric[predictions_numeric =='NOCHURN'] = 0
+  predictions_numeric[predictions_numeric =='CHURN'] = 1
+  predictions_numeric = as.numeric(predictions_numeric)
+
+  bal_acc_dt[i]=bal_accuracy_vec(y_test_outer,predictions_dt$.pred_class)
+  auc_dt[i]=yardstick::roc_auc_vec(y_test_outer,predictions_numeric)
+  precision_dt[i]=yardstick::precision_vec(y_test_outer,predictions_dt$.pred_class)
+  recall_dt[i]=yardstick::recall_vec(y_test_outer,predictions_dt$.pred_class)
+
+    ####################### Random Forest  ########################
+  #Inner loop
+
+  rf_spec <- rand_forest(
+    mtry = tune(), trees = tune(), min_n = tune()
+  ) %>%
+    set_engine(
+      "ranger", num.threads = 7, importance = "impurity"
+    ) %>%
+    set_mode("classification")
+
+
+  rf_Wf <- workflow() %>%
+    add_recipe(recipe) %>%
+    add_model(rf_spec)
+
+  rf_grid <-
+    grid_regular(
+      min_n(),
+      mtry(range = c(2,7)),
+      trees(range = c(10, 300)),levels = 6)
+
+
+
+  tune_res <-
+    rf_Wf %>%
+    tune_grid(
+      resamples = folds, grid = rf_grid,
+      metrics = metric_set(yardstick::recall)
+    )
+
+  best_rf <- tune_res %>%
+    select_best("recall")
+
+  rf <- rand_forest(mtry=best_rf$mtry, trees = best_rf$trees, min_n = best_rf$min_n, mode = 'classification')
+
+  rf_fit <-
+    rf %>%
+    set_engine("ranger") %>%
+    fit(churn ~., data = dataset_train_outer)
+  predictions_rf=predict(rf_fit, dataset_test_outer)
+
+  autoplot(tune_res)
+
+  predictions_numeric = as.character(predictions_rf$.pred_class)
+  predictions_numeric[predictions_numeric =='NOCHURN'] = 0
+  predictions_numeric[predictions_numeric =='CHURN'] = 1
+  predictions_numeric = as.numeric(predictions_numeric)
+
+  #valore di metrica dell'outer loop
+  bal_acc_rf[i]=bal_accuracy_vec(y_test_outer,predictions_rf$.pred_class)
+  auc_rf[i]=yardstick::roc_auc_vec(y_test_outer,predictions_numeric)
+  precision_rf[i]=yardstick::precision_vec(y_test_outer,predictions_rf$.pred_class)
+  recall_rf[i]=yardstick::recall_vec(y_test_outer,predictions_rf$.pred_class)
+
+}
+```
+
+- First we plot all four performance measures reached for each of the algorithm considering folds and repetitions of stratified nested cross validation employed for hyperparameter tuning and model selection:
+
+```{r}
+bal_acc_total = bal_acc_lr
+bal_acc_total = append(bal_acc_total, bal_acc_dt)
+bal_acc_total = append(bal_acc_total, bal_acc_rf)
+
+auc_total = auc_lr
+auc_total = append(auc_total, auc_dt)
+auc_total = append(auc_total, auc_rf)
+
+precision_total = precision_lr
+precision_total = append(precision_total, precision_dt)
+precision_total = append(precision_total, precision_rf)
+
+recall_total = recall_lr
+recall_total = append(recall_total, recall_dt)
+recall_total = append(recall_total, recall_rf)
+
+model_total = c()
+for (j in 1:50) {
+  model_total = append(model_total, 'LR')
+}
+
+for (j in 1:50) {
+  model_total = append(model_total, 'DT')
+}
+
+for (j in 1:50) {
+  model_total = append(model_total, 'RF')
+}
+
+asc = c()
+for (i in 1:3){
+  for (j in 1:50) {
+    asc = append(asc, j)
+  }
+}
+
+df_result = data.frame(asc, model_total, bal_acc_total, auc_total, precision_total, recall_total)
+df_result$model_total = factor(df_result$model_total, levels=c("LR", "DT", "RF"))
+
+# Line plots
+bal_acc_line = ggplot(df_result, aes(group = model_total, y = bal_acc_total, x = asc, colour = model_total)) +
+    geom_point() +
+    geom_line() + 
+    scale_color_manual(values = c("red","black", 'blue')) +
+    labs(title = 'Balanced accuracy of models',y = 'Bal. Accuracy', x = 'Models')
+
+recall_line = ggplot(df_result, aes(group = model_total, y = recall_total, x = asc, colour = model_total))+
+    geom_point() +
+    geom_line() + 
+    scale_color_manual(values = c("red","black", 'blue')) +
+    labs(title = 'Recall of models',y = 'Recall', x = 'Models')
+
+precision_line = ggplot(df_result, aes(group = model_total, y = precision_total, x = asc, colour = model_total))+
+    geom_point() +
+    geom_line() + 
+    scale_color_manual(values = c("red","black", 'blue')) +
+    labs(title = 'Precision of models',y = 'Precision', x = 'Models')
+
+auc_line = ggplot(df_result, aes(group = model_total, y = auc_total, x = asc, colour = model_total))+
+    geom_point() +
+    geom_line() + 
+    scale_color_manual(values = c("red","black", 'blue')) +
+    labs(title = 'AUC of models',y = 'AUC', x = 'Models')
+
+ggarrange(bal_acc_line, recall_line, precision_line, auc_line,
+          ncol = 2, nrow = 2)
+```
+
+
+From the graphs above it can be seen that the *Decision tree* and *Random Forest* show a comparable performance, moreover, it is superior compared to the *Logistic regression*.
+Furthermore, it is possible to see how in *Precision* assessment there is a higher variability of the metric along different combination of folds and repetition used, especially for *Logistic Regression*.
+
+
+- Then we summarize performances of the three algorithms by generating a boxplot:
+
+```{r, fig.align = 'center'}
+
+bal_acc_plot = ggplot(df_result, aes(x = model_total, y = bal_acc_total))+
+  geom_boxplot() + 
+  stat_summary() +
+  stat_boxplot(geom = 'errorbar', width = 0.5) + 
+  labs(title = 'Balanced accuracy of models',y = 'Bal. Accuracy', x = 'Models')
+
+recall_plot = ggplot(df_result, aes(x = model_total, y = recall_total))+
+  geom_boxplot() + 
+  stat_summary() +
+  stat_boxplot(geom = 'errorbar', width = 0.5) + 
+  labs(title = 'Recall of models', y = 'Recall', x = 'Models')
+
+precision_plot = ggplot(df_result, aes(x = model_total, y = precision_total))+
+  geom_boxplot() + 
+  stat_summary() +
+  stat_boxplot(geom = 'errorbar', width = 0.5) + 
+  labs(title = 'Precision of models', y = 'Precision', x = 'Models')
+
+auc_plot = ggplot(df_result, aes(x = model_total, y = auc_total))+
+  geom_boxplot() + 
+  stat_summary() +
+  stat_boxplot(geom = 'errorbar', width = 0.5) + 
+  labs(title = 'AUC of models', y = 'AUC', x = 'Models')
+
+
+ggarrange(bal_acc_plot, recall_plot, precision_plot, auc_plot,
+          ncol = 2, nrow = 2)
+```
+Plots confirm that the *Decision Tree* and *Random Forest* models produced the highest and comparable performance measures. Their prediction performances are higher than the *Logistic Regression* model. Tree-based algorithm characteristics may cause the similarity of results of *DT* and *RF.* 
+Logistic Regression and tree-based algorithms differ in the way that they generate decision boundaries i.e. the lines that are drawn to separate different classes.
+*Decision Trees* bisect the space into smaller and smaller regions, whereas *Logistic Regression* fits a single line to divide the space exactly into two (of course for higher-dimensional data, these lines would generalize to planes and hyperplanes). A single linear boundary can sometimes be limiting for *Logistic Regression* that's probably why it shows lower performance.
+
+
+The final model of each algorithm has been created with the best hyperparameters extracted considering the recall, the most important metric. This metric indicates the proportion of positive results yielded by the model by the total number of positive labels in the dataset. In this case, the Recall reveals the proportion of churns identified correctly by the total number of churns.
+Recall is more important because it's preferable to have a model that does not miss any churns but sometimes classify a non-churns as churns, than a model that does not classify non-churns as churns but misses a lot of churns. In other words, we prefer to be incorrect when classifying a non-churning costumer than when classifying a churning customer.
+
+
+- Logistic regression
+
+
+```{r}
+p = max(recall_lr)
+index = match(p, recall_lr)
+
+i = index
+
+dataset_train_outer=dataset[cvIndex[[i]],]
+dataset_test_outer=dataset[-cvIndex[[i]],]
+x_train_outer=x[cvIndex[[i]],]
+x_test_outer=x[-cvIndex[[i]],]
+y_train_outer=y[cvIndex[[i]]]
+y_test_outer=y[-cvIndex[[i]]]
+
+lg <- logistic_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet")
+
+
+lg_grid <- grid_regular(mixture(),
+                        penalty(),levels=20)
+
+
+lg_wf <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(lg)
+
+lg_res <- 
+  lg_wf %>% 
+  tune_grid(
+    resamples = folds,
+    grid = lg_grid, 
+    metrics = metric_set(yardstick::recall)
+  )
+best_lg <- lg_res %>%
+  select_best("recall")
+
+lr <- logistic_reg(mixture = best_lg$mixture, penalty = best_lg$penalty)
+
+lr_fit <-
+  lr %>%
+  set_engine("glmnet") %>%
+  fit(churn ~., data = dataset_train_outer)
+
+predictions_lr=predict(lr_fit, dataset_test_outer)
+
+best_lg
+
+```
+
+Plot of parameters' combinations for Logistic Regression:
+
+```{r, fig.align='center'}
+autoplot(lg_res)
+```
+
+Confusion matrix
+```{r, fig.align='center'}
+cm = confusionMatrix(predictions_lr$.pred_class, y_test_outer)
+cm
+draw_confusion_matrix(cm)
+```
+
+
+- Decision tree
+```{r}
+######## BEST CONFUSION MATRIX DT #######
+p = max(recall_dt)
+index = match(p, recall_dt)
+
+
+i = index
+
+dataset_train_outer=dataset[cvIndex[[i]],]
+dataset_test_outer=dataset[-cvIndex[[i]],]
+x_train_outer=x[cvIndex[[i]],]
+x_test_outer=x[-cvIndex[[i]],]
+y_train_outer=y[cvIndex[[i]]]
+y_test_outer=y[-cvIndex[[i]]]
+
+dt_spec <-
+  decision_tree(
+    cost_complexity = tune(),
+    tree_depth = tune()
+  ) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_grid <- grid_regular(cost_complexity(),
+                          tree_depth(),
+                          levels = 10)
+
+tree_wf <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(dt_spec)
+
+tree_res <-
+  tree_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid = tree_grid,
+    metrics = metric_set(yardstick::recall)
+  )
+best_tree <- tree_res %>%
+  select_best("recall")
+
+dt <- decision_tree(cost_complexity = best_tree$cost_complexity, tree_depth=best_tree$tree_depth, mode = 'classification')
+
+dt_fit <-
+  dt %>%
+  set_engine("rpart") %>%
+  fit(churn ~., data = dataset_train_outer)
+
+predictions_dt=predict(dt_fit, dataset_test_outer)
+
+best_tree
+```
+
+Plot of parameters' combinations for Decision tree:
+
+```{r, fig.align = "center"}
+autoplot(tree_res)
+```
+
+Confusion matrix
+```{r, fig.align = "center"}
+cm = confusionMatrix(y_test_outer,predictions_dt$.pred_class)
+draw_confusion_matrix(cm)
+```
+
+- Random forest
+
+```{r}
+p = max(recall_rf)
+index = match(p, recall_rf)
+
+i = index
+
+dataset_train_outer=dataset[cvIndex[[i]],]
+dataset_test_outer=dataset[-cvIndex[[i]],]
+x_train_outer=x[cvIndex[[i]],]
+x_test_outer=x[-cvIndex[[i]],]
+y_train_outer=y[cvIndex[[i]]]
+y_test_outer=y[-cvIndex[[i]]]
+
+
+rf_spec <- rand_forest(
+  mtry = tune(), trees = tune(), min_n = tune()
+) %>%
+  set_engine(
+    "ranger", num.threads = 7, importance = "impurity"
+  ) %>%
+  set_mode("classification")
+
+recipe <- recipe(churn~., data=dataset_train_outer)
+
+rf_Wf <- workflow() %>%
+  add_recipe(recipe) %>%
+  add_model(rf_spec)
+
+rf_grid <-
+  grid_regular(
+    min_n(),
+    mtry(range = c(2,7)),
+    trees(range = c(10, 300)),levels = 6)
+
+
+folds <- vfold_cv(dataset_train_outer, strata = churn, v = 5)
+
+set.seed(123)
+
+tune_res <-
+  rf_Wf %>%
+  tune_grid(
+    resamples = folds, grid = rf_grid,
+    metrics = metric_set(yardstick::recall)
+  )
+
+best_rf <- tune_res %>%
+  select_best("recall")
+
+rf <- rand_forest(mtry=best_rf$mtry, trees = best_rf$trees, min_n = best_rf$min_n, mode = 'classification')
+
+rf_fit <-
+  rf %>%
+  set_engine("ranger") %>%
+  fit(churn ~., data = dataset_train_outer)
+
+predictions_rf=predict(rf_fit, dataset_test_outer)
+
+best_rf
+```
+Plot of parameters' combinations for Random Forest:
+
+```{r, fig.align= "center"}
+autoplot(tune_res)
+```
+
+```{r, fig.align= "center"}
+cm = confusionMatrix(y_test_outer,predictions_rf$.pred_class)
+draw_confusion_matrix(cm)
+```
+
+Looking at the 3 confusion matrices of the three algorithms, the highest *recall* value (i.e., the lowest number of misclassified churn cases) has been obtained with the decision tree.
+
+
+We notice that the logistic regression doesn't have an accuracy close to the ones of the decision tree and random forest. But it can give us other information about feature reduction. While selecting the best fit we printed the best parameters' combination and the coefficients of the net regression.
+```{r}
+coeff = lr_fit$fit$beta
+coefficients = lr_fit$fit$beta[1:7, dim(coeff)[2]]
+coefficients 
+```
+We can plot the trend of the coefficients respect to lambda's values.
+```{r, fig.align = 'center'}
+plotting_model_cv(lr_fit$fit, round(best_lg$mixture, 2))
+```
+The lasso regression uses the l1 norm, so it can make a coefficient equal to 0. At the extreme left-hand side of the plot the corresponding lasso coefficient estimates are the same as the usual least squares estimates. But as λ increases, the lasso coefficient estimates shrink towards zero. When λ is extremely large, then all of the coefficients' estimates are basically zero; this corresponds to the null model that contains no predictors. 
+
+
+# Conclusion
+
+Reducing churn is extremely important in competitive markets since acquiring new customers is very difficult, for this reason this report aimed to understand the mum’s behavior and build a system that prevent churning using a predictive model. This prediction model needs to achieve high Recall values to have a model that ideally does not miss any churns. We have applied feature engineering, effective feature transformation approach to make the features ready for machine learning algorithms. The algorithms employed are Decision Tree, Random Forest and Logistic Regression. We compared models by using a repeated stratified nested cross validation.The experimental results show that the tree based algorithms outperformed Logistic Regression in terms of all the performance measures such as balanced accuracy, precision, recall and AUC score. It is interesting to note that only behavioral data was used - no demographic data was included the model. By using more complex and game specific features, a better classification performance could possibly be achieved.
