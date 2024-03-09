@@ -155,7 +155,7 @@ After importing the dataset we want to visualize the *NA* values. We use a funct
 
 ```{r, fig.align = 'center'}
 ######### DATASETS #########
-anagrafica <- read_csv("anagrafica.csv", show_col_types = FALSE,
+anagrafica <- read_csv("data/anagrafica.csv", show_col_types = FALSE,
                        col_types = cols(Provincia = col_skip(), 
                        SiglaProvincia = col_skip(), Comune = col_skip()))
 
@@ -223,7 +223,7 @@ In 2020 and 2021, births have a similar trend, but with a higher amount in 2021.
 Importing the dataset:
 ```{r}
 ######### DATASETS #########
-accessi_app <- read_csv("accessi_app.csv", show_col_types = FALSE)
+accessi_app <- read_csv("data/accessi_app.csv", show_col_types = FALSE)
 
 ```
 
@@ -262,7 +262,7 @@ From the bar graph, we can see that more access was made in the summer months (*
 ### Prodotti_caricati
 Importing the dataset:
 ```{r}
-prodotti_caricati <- read_csv('prodotti_caricati.csv', show_col_types = FALSE)
+prodotti_caricati <- read_csv('data/prodotti_caricati.csv', show_col_types = FALSE)
 prodotti_caricati = filter(prodotti_caricati, created_at >= survey_start & created_at <= survey_end)
 ```
 
@@ -295,7 +295,7 @@ The distribution has a tail on the right side of the distribution (confirmed by 
 
 Importing the dataset:
 ```{r}
-missioni_players <- read_csv("missioni_players.csv", show_col_types = FALSE, 
+missioni_players <- read_csv("data/missioni_players.csv", show_col_types = FALSE, 
                              col_types = cols(type = col_skip()))
 missioni_players = filter(missioni_players, created_at >= survey_start & created_at <= survey_end)
 ```
@@ -359,7 +359,7 @@ The graph of Tukey's test shows the average difference between the points obtain
 
 Importing the dataset:
 ```{r import premi_mamme}
-premi_mamme <- read_csv("premi_mamme.csv", show_col_types = FALSE, 
+premi_mamme <- read_csv("data/premi_mamme.csv", show_col_types = FALSE, 
                         col_types = cols(deliveryMode = col_skip(),
                                          nomepremio = col_skip()))
 premi_mamme = filter(premi_mamme, datarichiestapremio >= survey_start & datarichiestapremio <= survey_end)
@@ -418,7 +418,7 @@ ggplot(premi_mamme, aes(x = tipopremio, y = puntipremio))+
 ### Conversione_ean_prodotto
 Importing the dataset:
 ```{r Import conversione_ean_prodotto}
-conversione_ean_prodotto <- read_csv("conversione_ean_prodotto.csv",
+conversione_ean_prodotto <- read_csv("data/conversione_ean_prodotto.csv",
                                      col_types = cols(REFERENZA_DES = col_skip(), 
                                                       SEGMENTO_DES = col_skip()))
 ```
@@ -465,7 +465,7 @@ We note that there are different types of nappies among different TIERS, in fact
 ```{r Boxplot punti vs categoria prodotti, fig.align = 'center'}
 ggplot(subset(prodotti, !is.na(TIER)), aes(x = reorder(TIER, points), y = points)) + 
   geom_boxplot(color = 'black', width = 0.3, na.rm = TRUE) +
-  stat_summary(fun.y=mean, geom="point") +
+  stat_summary(fun.y=mean, geom="point", color = 'red') +
   stat_boxplot(geom ='errorbar', width = 0.2) +
   labs(title = "Boxplot products' points", x = 'TIER', y = 'Points')
 ```
@@ -727,8 +727,9 @@ lm_punti_missioni = lm(points_missioni ~ num_missioni, active_users)
 summary(lm_punti_missioni)
 
 
-ggplot(active_users, aes(x = num_missioni, y = points_missioni)) + 
-  geom_point()+
+ggplot(active_users, aes(x = as.factor(num_missioni), y = points_missioni)) +
+  geom_boxplot(color = 'black', width = 0.3, na.rm = TRUE) +
+  stat_summary(fun.y=mean, geom="point", color = 'red') +
   geom_abline(intercept = lm_punti_missioni$coefficients[1], slope = lm_punti_missioni$coefficients[2], col = 'blue') + 
   labs(title = "Linear model between missions' number and points", x = "# missions", y = 'Points')
 ```
@@ -748,7 +749,7 @@ summary(lm_punti_premi)
 
 ggplot(filter(active_users, num_reward > 0), aes(x = factor(num_reward), y = points_premi)) + 
   geom_boxplot() +
-  stat_summary() +
+  stat_summary(color = 'red') +
   stat_boxplot(geom = "errorbar", width = 0.3) +
   geom_abline(intercept = lm_punti_premi$coefficients[1], slope = lm_punti_premi$coefficients[2], col = 'blue') + 
   labs(title = "Linear model reward points vs rewards' number", x = "# Rewards", y = "Reward Points")
